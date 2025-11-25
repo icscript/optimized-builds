@@ -81,13 +81,14 @@ TODO
 
 (Section has pre-req's that may be needed, not sure if Python script installs them or calls them out)
 
-Install libraries
+## Install libraries
 One time only: install required libraries and rust
 
 sudo apt install cmake clang lld build-essential git libclang-dev pkg-config libssl-dev
 curl https://sh.rustup.rs -sSf | sh
 source $HOME/.cargo/env
-Get new release and compile
+
+## Get new release and compile
 With each new polkadot release: Update rust
 
 rustup update
@@ -109,8 +110,10 @@ export RUSTFLAGS="-C target-cpu=native -C codegen=1"
 cargo build --release --target=x86_64-unknown-linux-gnu --locked -Z unstable-options
 Compiling takes a little while. On a fast machine with NVMe storage, it is about 15 minutes.
 
+Important:
 From our latest analysis, we have detected better build options that have to be specified as a profile in the Cargo.toml file. Please use our convenient Python script for building.
-Benchmark and deploy
+
+## Benchmark and deploy
 Benchmark your optimized binary polkadot_opt to make sure it runs OK.
 
 cp target/x86_64-unknown-linux-gnu/release/polkadot ~/optimized_polkadot/polkadot_opt
@@ -124,5 +127,5 @@ chmod +x polkadot
 polkadot benchmark machine --disk-duration 30
 If you are happy, deploy the optimized binary. With systemd, you can simply replace the official binary with the optimized one and restart the service. For docker, you will need to build your own docker image.
 
-Problems
+## Problems
 New polkadot versions can require newer version of system libraries and programs (for example, cmake). Updating your machine with sudo apt update is advisable.
