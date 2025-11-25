@@ -9,8 +9,11 @@ Based on our detailed analysis, we have compiled polkadot version 0.9.27 by modi
 In the table below, the benchmark scores (higher is better) and the timing of the Remark Extrinsic (lower is better) are listed for a few machines with different CPU architectures.
 
 Based on their published statistics, these settings seemed to produce the best results:
+
 Codegen-units 1
-Lto fat
+
+Lto fat (for our initial tests we should use thin for speed, once everythings working we could change to fat)
+
 Opt-level 3
 
 ## How to compile
