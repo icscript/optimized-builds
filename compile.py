@@ -2,12 +2,14 @@
 
 # Copyright 2022 https://www.math-crypto.com
 # GNU General Public License
+#
+# Updated 2024 for polkadot-sdk compatibility
 
-# Script to compile a specific release of polkadot with many different 
+# Script to compile a specific release of polkadot with many different
 # sets of optimization options (specified in the code down below, look
 # for the ##########).
 #
-# The binaries are placed in 
+# The binaries are placed in
 #     ~/polkadot-optimized/bin/VERSION
 # (change this in the code below if needed).
 # Beware that compiling takes a while (about 30 min per set of options).
@@ -29,28 +31,28 @@ import itertools
 import tomlkit
 from pathlib import Path
 
-def extract_largest_number(files):    
-    if len(files) == 0:        
+def extract_largest_number(files):
+    if len(files) == 0:
         return -1
-    else:        
+    else:
         return max([int(re.findall("_\d+.bin",f)[0][1:-4]) for f in files])
-    
+
 def hours_minutes(dt1, dt2):
     rd = dateutil.relativedelta.relativedelta(dt2, dt1)
     return "{}H {}M {}S".format(rd.hours, rd.minutes, rd.seconds)
 
-def run(cmd, work_dir, log_file, env=None):    
-    os.chdir(work_dir)    
+def run(cmd, work_dir, log_file, env=None):
+    os.chdir(work_dir)
     with open(log_file, "a+") as log:
         if env==None:
             subprocess.run(cmd, shell=True, check=True, universal_newlines=True, stderr=log)
         else:
-            subprocess.run(cmd, shell=True, check=True, universal_newlines=True, stderr=log, env=env)        
+            subprocess.run(cmd, shell=True, check=True, universal_newlines=True, stderr=log, env=env)
 
 def compile(version, opts):
     print(" === STARTING COMPILATION === ")
     print(opts)
-    print(version)  
+    print(version)
 
     # Prepare build directory
     os.chdir(os.path.expanduser('~/polkadot-optimized'))
@@ -61,11 +63,11 @@ def compile(version, opts):
     # Check if opts was not compiled before
     list_of_files = glob.glob(bin_dir + '/polkadot_*.json')
     for f in list_of_files:
-        with open(f, "r") as file: 
+        with open(f, "r") as file:
             json_dict = json.load(file)
             if json_dict['build_options']==opts:
                 return
-    
+
     # Get number of new polkadot build, set filenames
     list_of_files = glob.glob(bin_dir + '/polkadot_*.bin')
     nb = extract_largest_number(list_of_files) + 1
@@ -73,15 +75,24 @@ def compile(version, opts):
     new_filename_root = bin_dir + '/polkadot_{}'.format(nb)
     log_file = os.path.expanduser('~/polkadot-optimized/' + new_filename_root + ".log")
 
-    if os.path.isdir('polkadot'):
-        shutil.rmtree('polkadot')
+    # MODIFIED: Changed from 'polkadot' to 'polkadot-sdk' for new repo structure
+    if os.path.isdir('polkadot-sdk'):
+        shutil.rmtree('polkadot-sdk')
 
     # Clone git and run init
     work_dir = os.path.expanduser('~/polkadot-optimized')
-    run("git clone --depth 1 --branch v{} https://github.com/paritytech/polkadot.git".format(version), work_dir, log_file)
 
-    work_dir = os.path.expanduser('~/polkadot-optimized/polkadot')
-    run("./scripts/init.sh", work_dir, log_file)
+    # MODIFIED: Updated git URL from paritytech/polkadot to paritytech/polkadot-sdk
+    # MODIFIED: Version tag format changed from 'v{version}' to 'polkadot-{version}'
+    # Example: old format was 'v0.9.27', new format is 'polkadot-stable2509-2'
+    run("git clone --depth 1 --branch polkadot-{} https://github.com/paritytech/polkadot-sdk.git".format(version), work_dir, log_file)
+
+    # MODIFIED: Updated work_dir path from 'polkadot' to 'polkadot-sdk'
+    work_dir = os.path.expanduser('~/polkadot-optimized/polkadot-sdk')
+
+    # MODIFIED: REMOVED init.sh call - polkadot-sdk is a monorepo and doesn't need/have init.sh
+    # The old paritytech/polkadot repo required: run("./scripts/init.sh", work_dir, log_file)
+    # This is no longer needed in the new polkadot-sdk structure
 
     # Set build options
     if opts['toolchain'] == 'stable':
@@ -109,30 +120,33 @@ def compile(version, opts):
 
     ## NEW CODE AS CUSTOM PROFILE (
     # It overwrites the production profile -- otherwise still build errors.
-    config = tomlkit.loads(Path(work_dir + "/Cargo.toml").read_text())    
+    # NOTE: In polkadot-sdk, the Cargo.toml with profiles is in the root directory
+    config = tomlkit.loads(Path(work_dir + "/Cargo.toml").read_text())
     profile = {}
     # TODO test if arch can be set here
     # if not opts['arch'] == None:
-    #     profile['arch'] = opts['arch']    
-    profile['inherits'] = 'release'    
-    profile['codegen-units'] = opts['codegen-units']    
-    profile['lto'] = opts['lto']    
-    profile['opt-level'] = opts['opt-level']          
+    #     profile['arch'] = opts['arch']
+    profile['inherits'] = 'release'
+    profile['codegen-units'] = opts['codegen-units']
+    profile['lto'] = opts['lto']
+    profile['opt-level'] = opts['opt-level']
 
     config['profile']['production'] = profile
     with Path(work_dir + "/Cargo.toml").open("w") as fout:
         fout.write(tomlkit.dumps(config))
-    
+
     RUSTFLAGS = ""
     # TODO test if arch can be set in profile
     if not opts['arch'] == None:
         RUSTFLAGS = RUSTFLAGS + " -C target-cpu={}".format(opts['arch'])
 
     # Start building
-    cargo_build_opts = ' --profile=production --locked --target=x86_64-unknown-linux-gnu'    
-        
+    # MODIFIED: Added -p polkadot to build only the polkadot package (and its dependencies)
+    # This builds all 3 binaries: polkadot, polkadot-execute-worker, polkadot-prepare-worker
+    cargo_build_opts = ' -p polkadot --profile=production --locked --target=x86_64-unknown-linux-gnu'
+
     if opts['toolchain'] == 'nightly':
-        cargo_build_opts = cargo_build_opts + ' -Z unstable-options'    
+        cargo_build_opts = cargo_build_opts + ' -Z unstable-options'
 
     cargo_cmd = 'cargo build ' + cargo_build_opts
     env = os.environ.copy()
@@ -142,17 +156,35 @@ def compile(version, opts):
     run(cargo_cmd, work_dir, log_file, env=env)
     dt2 = datetime.datetime.now()
 
-    ## Copy new polkadot file
+    ## Copy new polkadot files
     os.chdir(os.path.expanduser('~/polkadot-optimized'))
 
-    orig_filename = 'polkadot/target/x86_64-unknown-linux-gnu/production/polkadot'
-    shutil.copy2(orig_filename, new_filename_root + ".bin")
+    # MODIFIED: Updated path from 'polkadot/' to 'polkadot-sdk/'
+    target_dir = 'polkadot-sdk/target/x86_64-unknown-linux-gnu/production'
+
+    # MODIFIED: Now copying all 3 required binaries instead of just 1
+    # polkadot-sdk produces 3 binaries that all need to be deployed together:
+    # - polkadot: main node binary
+    # - polkadot-prepare-worker: PVF preparation worker
+    # - polkadot-execute-worker: PVF execution worker
+    binaries = ['polkadot', 'polkadot-prepare-worker', 'polkadot-execute-worker']
+
+    for binary in binaries:
+        orig_filename = '{}/{}'.format(target_dir, binary)
+        if binary == 'polkadot':
+            # Main binary keeps the numbered naming for benchmark compatibility
+            shutil.copy2(orig_filename, new_filename_root + ".bin")
+        else:
+            # Worker binaries use their original names with build number suffix
+            shutil.copy2(orig_filename, bin_dir + '/{}_{}.bin'.format(binary, nb))
 
     json_dict = {}
     json_dict['build_options'] = opts
     json_dict['build_time'] = hours_minutes(dt1, dt2)
     json_dict['RUSTFLAGS'] = RUSTFLAGS
     json_dict['build_command'] = cargo_cmd
+    # MODIFIED: Added list of binaries to JSON for reference
+    json_dict['binaries'] = binaries
 
     json_object = json.dumps(json_dict, indent=4)
     with open(new_filename_root + ".json", "w") as outfile:
@@ -166,25 +198,32 @@ def product_dict(**kwargs):
         yield dict(zip(keys, instance))
 
 if __name__ == "__main__":
-    version = '0.9.27'
+    # MODIFIED: Updated version format for polkadot-sdk
+    # Old format: '0.9.27' (used with v{version} tag)
+    # New format: 'stable2509-2' (used with polkadot-{version} tag)
+    # This corresponds to polkadot v1.20.2
+    # See releases at: https://github.com/paritytech/polkadot-sdk/releases
+    version = 'stable2509-2'
 
-    # # All the options tested for analysis on websise
+    # # All the options tested for analysis on website
     # dict_opts = {'toolchain': ['stable', 'nightly'],
     #             'arch':      [None, 'alderlake'],  # use native if other arch
     #             'codegen-units':   [1, 16],
-    #             'lto':       ['off', 'fat', 'thin'],                
+    #             'lto':       ['off', 'fat', 'thin'],
     #             'opt-level': [2, 3]
-    #             } 
-    # opts = list(product_dict(**dict_opts))                                      
-    
+    #             }
+    # opts = list(product_dict(**dict_opts))
+
     # Only the good builds after analysis - takes about 4 hours to build
+    # SUGGESTION: For initial testing, comment out all but one option to verify
+    # the build process works before running all 5 configurations
     opts = []
     opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 1,  'lto': 'fat',  'opt-level': 3}) # build 15
-    opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 21
-    opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'fat',  'opt-level': 2}) # build 38
-    opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'thin', 'opt-level': 2}) # build 40
-    opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 45
-                        
+    #opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 21
+    #opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'fat',  'opt-level': 2}) # build 38
+    #opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'thin', 'opt-level': 2}) # build 40
+    #opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 45
+
     print("Number of different builds: {}".format(len(opts)))
     for opt in opts:
-        compile(version, opt)    
+        compile(version, opt)
