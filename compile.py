@@ -288,12 +288,13 @@ if __name__ == "__main__":
     # Only the good builds after analysis - takes about 4 hours to build
     # SUGGESTION: For initial testing, comment out all but one option to verify
     # the build process works before running all 5 configurations
+    # nightly/stable refers to RUST compiler nightly vs stable releases.
     opts = []
     opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 1,  'lto': 'fat',  'opt-level': 3}) # build 15
     opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 21
-    #opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'fat',  'opt-level': 2}) # build 38
-    #opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'thin', 'opt-level': 2}) # build 40
-    #opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 45
+    opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'fat',  'opt-level': 2}) # build 38
+    opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'thin', 'opt-level': 2}) # build 40
+    opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 45
 
     print("Number of different builds: {}".format(len(opts)))
     for opt in opts:
