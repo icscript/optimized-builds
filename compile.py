@@ -111,6 +111,18 @@ def compile(version, opts):
         run("rustup override set nightly", work_dir, log_file)
         # subprocess.Popen("rustup override set nightly", shell=True, check=True, universal_newlines=True)
 
+    # Update the active toolchain to latest version
+    # Ensures we're using the newest stable or nightly with latest optimizations
+    run("rustup update", work_dir, log_file)
+
+    # Ensure wasm32-unknown-unknown target is installed for current toolchain
+    # Polkadot SDK requires WASM compilation for runtime
+    run("rustup target add wasm32-unknown-unknown", work_dir, log_file)
+
+    # Ensure rust-src component is installed for current toolchain
+    # Required for compiling WASM runtimes (provides std library sources)
+    run("rustup component add rust-src", work_dir, log_file)
+
     run("cargo fetch", work_dir, log_file)
 
     ## OLD CODE WITH RUSTFLAGS
