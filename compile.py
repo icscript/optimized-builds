@@ -35,7 +35,7 @@ def extract_largest_number(files):
     if len(files) == 0:
         return -1
     else:
-        return max([int(re.findall("_\d+.bin",f)[0][1:-4]) for f in files])
+        return max([int(re.findall(r"_\d+.bin",f)[0][1:-4]) for f in files])
 
 def hours_minutes(dt1, dt2):
     rd = dateutil.relativedelta.relativedelta(dt2, dt1)
@@ -79,13 +79,23 @@ def compile(version, opts):
     if os.path.isdir('polkadot-sdk'):
         shutil.rmtree('polkadot-sdk')
 
-    # Clone git and run init
+    # Download and extract release tarball
     work_dir = os.path.expanduser('~/polkadot-optimized')
 
-    # MODIFIED: Updated git URL from paritytech/polkadot to paritytech/polkadot-sdk
-    # MODIFIED: Version tag format changed from 'v{version}' to 'polkadot-{version}'
-    # Example: old format was 'v0.9.27', new format is 'polkadot-stable2509-2'
-    run("git clone --depth 1 --branch polkadot-{} https://github.com/paritytech/polkadot-sdk.git".format(version), work_dir, log_file)
+    # Download the official release tarball instead of git clone
+    # Release tarballs often have better vendored dependencies than git clones
+    # MODIFIED: Changed from git clone to tarball download for better compatibility
+    tarball_url = "https://github.com/paritytech/polkadot-sdk/archive/refs/tags/polkadot-{}.tar.gz".format(version)
+    tarball_file = "polkadot-{}.tar.gz".format(version)
+
+    run("curl -L -o {} {}".format(tarball_file, tarball_url), work_dir, log_file)
+    run("tar -xzf {}".format(tarball_file), work_dir, log_file)
+    run("rm {}".format(tarball_file), work_dir, log_file)
+
+    # Rename extracted directory to polkadot-sdk for consistency
+    # GitHub tarballs extract to polkadot-sdk-polkadot-{version} format
+    extracted_dir = "polkadot-sdk-polkadot-{}".format(version)
+    run("mv {} polkadot-sdk".format(extracted_dir), work_dir, log_file)
 
     # MODIFIED: Updated work_dir path from 'polkadot' to 'polkadot-sdk'
     work_dir = os.path.expanduser('~/polkadot-optimized/polkadot-sdk')
@@ -151,6 +161,67 @@ def compile(version, opts):
     cargo_cmd = 'cargo build ' + cargo_build_opts
     env = os.environ.copy()
     env["RUSTFLAGS"] =  RUSTFLAGS
+
+    # Generate custom version suffix from build options for tracking
+    # Format: {toolchain}-{arch}-cu{codegen-units}-{lto}-opt{opt-level}-bld{build_number}
+    # Example: stb-native-cu1-fat-opt3-bld0
+    # This is more useful than git hash for performance comparison
+    toolchain_abbr = 'stb' if opts['toolchain'] == 'stable' else 'nightly'
+    arch_abbr = opts['arch'] if opts['arch'] else 'default'
+    version_suffix = f"{toolchain_abbr}-{arch_abbr}-cu{opts['codegen-units']}-{opts['lto']}-opt{opts['opt-level']}-bld{nb}"
+    env["SUBSTRATE_CLI_GIT_COMMIT_HASH"] = version_suffix
+    print(f"Version suffix: {version_suffix}")
+
+    # Compiler selection for C/C++ dependencies (RocksDB, etc.)
+    # Polkadot SDK docs recommend clang: https://docs.polkadot.com/develop/parachains/install-polkadot-sdk/
+    # However, newer compilers have compatibility issues:
+    # - GCC 15+ and clang 19+ have stricter type checking that breaks RocksDB's headers
+    # - On bleeding-edge distros (Arch), even clang-18 links against GCC 15's libstdc++, causing failures
+    # Solution: Prefer gcc-14 (provides both compatible compiler + libstdc++)
+    # Falls back to clang-18 on stable distros (Ubuntu) where it links to older GCC stdlib
+    # You can override by setting CC/CXX environment variables before running this script
+    if "CC" not in env or "CXX" not in env:
+        cc_found = None
+        cxx_found = None
+
+        # Try compatible compilers in order of preference
+        # clang-18 and gcc-14 are known to work with RocksDB in polkadot-stable2509
+        # On Arch, clang18 package installs to /usr/lib/llvm18/bin/
+        # On Arch, gcc14 installs to /usr/bin/gcc-14 and /usr/bin/g++-14
+        # IMPORTANT: Even clang-18 uses the system libstdc++, so on Arch with GCC 15
+        #            we need GCC 14 to get compatible libstdc++
+        for cc_candidate, cxx_candidate in [
+            ("gcc-14", "g++-14"),                                            # Prefer GCC 14 on Arch
+            ("/usr/bin/gcc-14", "/usr/bin/g++-14"),                        # Explicit Arch path
+            ("/usr/lib/llvm18/bin/clang", "/usr/lib/llvm18/bin/clang++"),  # Arch clang18 path
+            ("clang-18", "clang++-18"),                                     # Ubuntu/Debian clang18
+            ("clang", "clang++"),
+        ]:
+            cc_path = shutil.which(cc_candidate)
+            cxx_path = shutil.which(cxx_candidate)
+            if cc_path and cxx_path:
+                cc_found = cc_candidate
+                cxx_found = cxx_candidate
+                print(f"Using {cc_candidate}/{cxx_candidate} for C/C++ compilation")
+                break
+
+        if not cc_found:
+            print("ERROR: No compatible C/C++ compiler found!")
+            print("Polkadot SDK requires clang for building.")
+            print("However, newer compilers (clang 19+, GCC 15+) have compatibility issues with RocksDB.")
+            print("")
+            print("Please install a compatible compiler:")
+            print("  Arch/CachyOS: sudo pacman -S clang18")
+            print("  Or:           sudo pacman -S gcc14")
+            print("")
+            print("See official requirements:")
+            print("  https://docs.polkadot.com/develop/parachains/install-polkadot-sdk/")
+            raise RuntimeError("No compatible C/C++ compiler found")
+
+        if "CC" not in env:
+            env["CC"] = cc_found
+        if "CXX" not in env:
+            env["CXX"] = cxx_found
 
     dt1 = datetime.datetime.now()
     run(cargo_cmd, work_dir, log_file, env=env)
@@ -219,7 +290,7 @@ if __name__ == "__main__":
     # the build process works before running all 5 configurations
     opts = []
     opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 1,  'lto': 'fat',  'opt-level': 3}) # build 15
-    #opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 21
+    opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 21
     #opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'fat',  'opt-level': 2}) # build 38
     #opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'thin', 'opt-level': 2}) # build 40
     #opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 45
