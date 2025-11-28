@@ -1,0 +1,51 @@
+# Python dependencies for polkadot-optimized scripts
+#
+# =============================================================================
+# CURRENT SETUP
+# =============================================================================
+#
+# Ubuntu (Python 3.12):
+#   - System packages (apt): requests, python-dateutil
+#   - pip --user: psutil, pandas, tomlkit
+#
+# Arch (Python 3.13):
+#   - pip system-wide (sudo pip): dateutil, psutil, pandas, tomlkit
+#   - Missing: requests
+#
+# =============================================================================
+# RECOMMENDED: System Packages
+# =============================================================================
+#
+# System packages are preferred because:
+#   - Managed by package manager (automatic updates, clean uninstalls)
+#   - Tested for compatibility with distro's Python version
+#   - No conflicts between pip and system package manager
+#   - Avoids "externally-managed-environment" errors on modern Python
+#
+# Arch/CachyOS:
+#   sudo pacman -S python-psutil python-requests python-pandas python-tomlkit python-dateutil
+#
+# Ubuntu/Debian:
+#   sudo apt install python3-psutil python3-requests python3-pandas python3-tomlkit python3-dateutil
+#
+# =============================================================================
+# ALTERNATIVE: pip install
+# =============================================================================
+#
+# If you prefer pip (or system packages aren't available):
+#
+#   pip install --user -r requirements.txt   # user-local (recommended)
+#   sudo pip install -r requirements.txt     # system-wide (not recommended)
+#
+# =============================================================================
+
+# compile.py
+tomlkit
+python-dateutil
+
+# run_benchmarks.py
+psutil
+requests
+
+# parse_benchmarks.py
+pandas
