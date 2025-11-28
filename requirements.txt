@@ -1,3 +1,9 @@
+#
+# For new packages: First check if they're available via apt with apt search python3-<package>, and install those when available
+# For packages not in apt: You can install them to your user directory with:
+# pip3 install --user <package-name>
+# apt = package mgr
+
 # Python dependencies for polkadot-optimized build and benchmark suite
 #
 # =============================================================================

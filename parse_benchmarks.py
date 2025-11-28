@@ -34,12 +34,17 @@ from pathlib import Path
 def convert_to_MiB(score_string):
     # MODIFIED: Use raw string for regex pattern
     raw_nb = float(re.findall(r"[+-]?\d+\.\d+", score_string)[0])
-    if 'KiB/s' in score_string:
-        nb = raw_nb/1000
-    if 'MiB/s' in score_string:
+    # Handle both old format (KiB/s, MiB/s, GiB/s) and new format (KiBs, MiBs, GiBs)
+    if 'KiB' in score_string:
+        nb = raw_nb / 1000
+    elif 'MiB' in score_string:
         nb = raw_nb
-    if 'GiB/s' in score_string:
-        nb = raw_nb*1000
+    elif 'GiB' in score_string:
+        nb = raw_nb * 1000
+    else:
+        # Fallback: assume MiB if unit not recognized
+        print("WARNING: Unrecognized unit in score string: {}".format(score_string))
+        nb = raw_nb
     return nb
 
 def get_cpu_pct(bench):
@@ -73,18 +78,40 @@ def get_scores(ascii_table):
     return scores
 
 def get_extrinsic_times(output_text):
+    """Parse extrinsic benchmark output. Returns None if parsing fails."""
     times = {}
-    # MODIFIED: Use raw strings for regex patterns
-    times['tot'] = float(re.search(r'(?<=Total: )(\d+)', output_text).group(0))
-    times['min'] = float(re.search(r'(?<=Min: )(\d+)', output_text).group(0))
-    times['max'] = float(re.search(r'(?<=Max: )(\d+)', output_text).group(0))
-    times['avg'] = float(re.search(r'(?<=Average: )(\d+)', output_text).group(0))
-    times['med'] = float(re.search(r'(?<=Median: )(\d+)', output_text).group(0))
-    times['std'] = float(re.search(r'(?<=Stddev: )(\d+)', output_text).group(0))
-    pct_99_95_75 = re.search(r'(?<=Percentiles 99th, 95th, 75th: )(\d+), (\d+), (\d+)', output_text).group(0).split(",")
-    times['pct99'] = float(pct_99_95_75[0])
-    times['pct95'] = float(pct_99_95_75[1])
-    times['pct75'] = float(pct_99_95_75[2])
+
+    # Helper function to safely extract a value
+    def safe_extract(pattern, text):
+        match = re.search(pattern, text)
+        if match:
+            return float(match.group(1))
+        return None
+
+    # Try to extract all values
+    times['tot'] = safe_extract(r'Total:\s*(\d+)', output_text)
+    times['min'] = safe_extract(r'Min:\s*(\d+)', output_text)
+    times['max'] = safe_extract(r'Max:\s*(\d+)', output_text)
+    times['avg'] = safe_extract(r'Average:\s*(\d+)', output_text)
+    times['med'] = safe_extract(r'Median:\s*(\d+)', output_text)
+    times['std'] = safe_extract(r'Stddev:\s*(\d+)', output_text)
+
+    # Check if we got the essential values
+    if times['tot'] is None or times['avg'] is None:
+        # Parsing failed - output format may have changed
+        return None
+
+    # Try to extract percentiles (optional)
+    pct_match = re.search(r'Percentiles 99th, 95th, 75th:\s*(\d+),\s*(\d+),\s*(\d+)', output_text)
+    if pct_match:
+        times['pct99'] = float(pct_match.group(1))
+        times['pct95'] = float(pct_match.group(2))
+        times['pct75'] = float(pct_match.group(3))
+    else:
+        times['pct99'] = None
+        times['pct95'] = None
+        times['pct75'] = None
+
     return times
 
 
@@ -121,11 +148,11 @@ def parse():
         # https://doc.rust-lang.org/rustc/codegen-options/index.html#lto
         # If -C lto is not specified, then the compiler will attempt to perform "thin local LTO"
         # which performs "thin" LTO on the local crate only across its codegen units.
-        # MODIFIED: Updated comment - official binaries from polkadot-sdk releases
-        # use similar settings (production profile with lto=true, codegen-units=1)
-        build_info['official'] = { "toolchain": "nightly", "arch": "none", "codegen-units": 16,
-                                    "lto": "thin local", "opt-level": 3 }
-        build_info['docker'] = build_info['official']
+        # Official binaries from polkadot-sdk releases use the production profile
+        # Default production profile: lto=true, codegen-units=1, opt-level=3
+        # We use approximate values here for comparison purposes
+        build_info['official'] = { "toolchain": "unknown", "arch": "unknown", "codegen-units": 1,
+                                    "lto": "true", "opt-level": 3 }
 
         # read the benchmarks
         all_data = []
@@ -176,7 +203,8 @@ def parse():
                 times = get_extrinsic_times(bench)
 
                 if not times:
-                    # no benchmark table (arch not supported probably)
+                    # Parsing failed - output format may have changed or benchmark failed
+                    print("WARNING: Could not parse extrinsic benchmark: {}".format(f.name))
                     continue
 
                 data = {"host": host, "date": date,
