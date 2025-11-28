@@ -185,29 +185,43 @@ def compile(version, opts):
     print(f"Version suffix: {version_suffix}")
 
     # Compiler selection for C/C++ dependencies (RocksDB, etc.)
-    # Polkadot SDK docs recommend clang: https://docs.polkadot.com/develop/parachains/install-polkadot-sdk/
-    # However, newer compilers have compatibility issues:
-    # - GCC 15+ and clang 19+ have stricter type checking that breaks RocksDB's headers
-    # - On bleeding-edge distros (Arch), even clang-18 links against GCC 15's libstdc++, causing failures
-    # Solution: Prefer gcc-14 (provides both compatible compiler + libstdc++)
-    # Falls back to clang-18 on stable distros (Ubuntu) where it links to older GCC stdlib
-    # You can override by setting CC/CXX environment variables before running this script
+    #
+    # BACKGROUND:
+    # - Polkadot SDK docs officially recommend clang
+    #   https://docs.polkadot.com/develop/parachains/install-polkadot-sdk/
+    # - Modern compilers (GCC 15+, clang 19+) have stricter type checking that breaks
+    #   RocksDB headers (missing #include <cstdint> for uint64_t types)
+    # - On Linux, clang uses GCC's standard library (libstdc++), not its own
+    #
+    # FALLBACK STRATEGY:
+    # 1. Try clang-18 first (preferred, matches Polkadot docs)
+    #    - Ubuntu 24.04: clang-18 → GCC 13 libstdc++ → works ✓
+    #    - Arch with GCC 15: clang-18 → GCC 15 libstdc++ → may fail
+    #
+    # 2. Fall back to gcc-14 (compatible compiler + libstdc++)
+    #    - Arch: Provides both GCC 14 compiler and compatible libstdc++
+    #    - Ubuntu: Not installed by default (stays on clang-18)
+    #
+    # 3. Try distro-specific paths for clang-18 and gcc-14
+    #    - Arch packages install to non-standard locations
+    #
+    # 4. Fall back to system clang (usually symlink to latest)
+    #    - WARNING: On bleeding-edge distros, this may be clang 19+ which can fail
+    #    - On stable distros (Ubuntu), usually symlinks to clang-18
+    #
+    # OVERRIDE: Set CC/CXX environment variables to force a specific compiler
+    #
     if "CC" not in env or "CXX" not in env:
         cc_found = None
         cxx_found = None
 
-        # Try compatible compilers in order of preference
-        # clang-18 and gcc-14 are known to work with RocksDB in polkadot-stable2509
-        # On Arch, clang18 package installs to /usr/lib/llvm18/bin/
-        # On Arch, gcc14 installs to /usr/bin/gcc-14 and /usr/bin/g++-14
-        # IMPORTANT: Even clang-18 uses the system libstdc++, so on Arch with GCC 15
-        #            we need GCC 14 to get compatible libstdc++
+        # Compiler preference order (try each until one is found)
         for cc_candidate, cxx_candidate in [
-            ("gcc-14", "g++-14"),                                            # Prefer GCC 14 on Arch
-            ("/usr/bin/gcc-14", "/usr/bin/g++-14"),                        # Explicit Arch path
-            ("/usr/lib/llvm18/bin/clang", "/usr/lib/llvm18/bin/clang++"),  # Arch clang18 path
-            ("clang-18", "clang++-18"),                                     # Ubuntu/Debian clang18
-            ("clang", "clang++"),
+            ("clang-18", "clang++-18"),                                     # 1. Preferred: clang-18 (Polkadot docs recommendation)
+            ("gcc-14", "g++-14"),                                            # 2. Fallback: GCC 14 (Arch with GCC 15)
+            ("/usr/lib/llvm18/bin/clang", "/usr/lib/llvm18/bin/clang++"),  # 3. Arch-specific: clang18 package path
+            ("/usr/bin/gcc-14", "/usr/bin/g++-14"),                        # 4. Arch-specific: gcc14 package path
+            ("clang", "clang++"),                                           # 5. Last resort: system default clang (may be too new!)
         ]:
             cc_path = shutil.which(cc_candidate)
             cxx_path = shutil.which(cxx_candidate)
@@ -215,6 +229,11 @@ def compile(version, opts):
                 cc_found = cc_candidate
                 cxx_found = cxx_candidate
                 print(f"Using {cc_candidate}/{cxx_candidate} for C/C++ compilation")
+
+                # Warn if using generic clang (might be too new on bleeding-edge distros)
+                if cc_candidate == "clang":
+                    print("WARNING: Using system default 'clang' - if build fails due to RocksDB errors,")
+                    print("         install clang-18 or gcc-14 for compatibility")
                 break
 
         if not cc_found:
@@ -300,7 +319,6 @@ if __name__ == "__main__":
     # Only the good builds after analysis - takes about 4 hours to build
     # SUGGESTION: For initial testing, comment out all but one option to verify
     # the build process works before running all 5 configurations
-    # nightly/stable refers to RUST compiler nightly vs stable releases.
     opts = []
     opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 1,  'lto': 'fat',  'opt-level': 3}) # build 15
     opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 21
