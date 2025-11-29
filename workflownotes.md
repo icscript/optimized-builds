@@ -7,7 +7,7 @@ echo "showing newest feather file at the top:"
 cd ~/polkadot-optimized && ls -t processed/todo/
 
 ### Run analysis using simple script we made:
-python3 analyze_simple.py processed/todo/stable2509-2_fernando-bue_2025-Nov-28_08h
+python3 analyze_simple.py processed/todo/stable2509-2_fernando-bue_2025-Nov-28_08h03.feather
 
 ## Regarding Jupyter on headless server
 ### If you ever want to use the notebook, you can SSH tunnel:
