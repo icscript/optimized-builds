@@ -1,16 +1,26 @@
+# Python dependencies for polkadot-optimized build and benchmark suite
 #
 # For new packages: First check if they're available via apt with apt search python3-<package>, and install those when available
 # For packages not in apt: You can install them to your user directory with:
 # pip3 install --user <package-name>
-# apt = package mgr
 #
-# to run notebooks:
+# To run notebooks:
 # sudo apt install jupyter-notebook
 # sudo apt install python3-matplotlib
 # sudo apt install python3-numpy
 # pip3 install --user --break-system-packages paretoset pyarrow
-
-# Python dependencies for polkadot-optimized build and benchmark suite
+#
+# =============================================================================
+# CURRENT SETUP
+# =============================================================================
+#
+# Ubuntu (Python 3.12):
+#   - System packages (apt): requests, python-dateutil
+#   - pip --user: psutil, pandas, tomlkit
+#
+# Arch (Python 3.13):
+#   - pip system-wide (sudo pip): dateutil, psutil, pandas, tomlkit
+#   - Missing: requests
 #
 # =============================================================================
 # RECOMMENDED: System Packages (Preferred Method)
