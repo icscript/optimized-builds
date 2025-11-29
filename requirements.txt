@@ -3,6 +3,12 @@
 # For packages not in apt: You can install them to your user directory with:
 # pip3 install --user <package-name>
 # apt = package mgr
+#
+# to run notebooks:
+# sudo apt install jupyter-notebook
+# sudo apt install python3-matplotlib
+# sudo apt install python3-numpy
+# pip3 install --user --break-system-packages paretoset pyarrow
 
 # Python dependencies for polkadot-optimized build and benchmark suite
 #
