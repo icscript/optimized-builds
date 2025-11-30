@@ -1,0 +1,7 @@
+CPU utilization at start: 0.0
+Error: 
+   0: [91mInvalid input: `polkadot-dev` is not supported anymore as the polkadot native runtime no longer part of the node.[0m
+
+Backtrace omitted. Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+CPU utilization at end: 0.1

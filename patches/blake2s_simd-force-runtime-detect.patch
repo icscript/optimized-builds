@@ -1,0 +1,57 @@
+--- a/src/guts.rs
++++ b/src/guts.rs
+@@ -50,17 +50,19 @@ impl Implementation {
+     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+     #[allow(unreachable_code)]
+     pub fn sse41_if_supported() -> Option<Self> {
+-        // Check whether SSE4.1 support is assumed by the build.
+-        #[cfg(target_feature = "sse4.1")]
+-        {
+-            return Some(Implementation(Platform::SSE41));
+-        }
+-        // Otherwise dynamically check for support if we can.
++        // PATCHED: Always prefer runtime detection when std is available.
++        // This prevents LTO from eliminating hand-tuned SIMD implementations
++        // when compiling with target-cpu=native on AVX2+ hardware.
+         #[cfg(feature = "std")]
+         {
+             if is_x86_feature_detected!("sse4.1") {
+                 return Some(Implementation(Platform::SSE41));
+             }
+         }
++        // Compile-time detection only for no_std environments where
++        // runtime detection is not available.
++        #[cfg(all(not(feature = "std"), target_feature = "sse4.1"))]
++        {
++            return Some(Implementation(Platform::SSE41));
++        }
+         None
+     }
+ 
+@@ -68,17 +70,19 @@ impl Implementation {
+     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+     #[allow(unreachable_code)]
+     pub fn avx2_if_supported() -> Option<Self> {
+-        // Check whether AVX2 support is assumed by the build.
+-        #[cfg(target_feature = "avx2")]
+-        {
+-            return Some(Implementation(Platform::AVX2));
+-        }
+-        // Otherwise dynamically check for support if we can.
++        // PATCHED: Always prefer runtime detection when std is available.
++        // This prevents LTO from eliminating hand-tuned SIMD implementations
++        // when compiling with target-cpu=native on AVX2+ hardware.
+         #[cfg(feature = "std")]
+         {
+             if is_x86_feature_detected!("avx2") {
+                 return Some(Implementation(Platform::AVX2));
+             }
+         }
++        // Compile-time detection only for no_std environments where
++        // runtime detection is not available.
++        #[cfg(all(not(feature = "std"), target_feature = "avx2"))]
++        {
++            return Some(Implementation(Platform::AVX2));
++        }
+         None
+     }

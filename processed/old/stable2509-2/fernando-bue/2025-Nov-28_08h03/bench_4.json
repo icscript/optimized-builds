@@ -1,0 +1,17 @@
+{
+    "build_options": {
+        "toolchain": "nightly",
+        "arch": "native",
+        "codegen-units": 16,
+        "lto": "fat",
+        "opt-level": 3
+    },
+    "build_time": "0H 14M 53S",
+    "RUSTFLAGS": " -C target-cpu=native",
+    "build_command": "cargo build  -p polkadot --profile=production --locked --target=x86_64-unknown-linux-gnu -Z unstable-options",
+    "binaries": [
+        "polkadot",
+        "polkadot-prepare-worker",
+        "polkadot-execute-worker"
+    ]
+}

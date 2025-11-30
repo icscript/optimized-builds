@@ -1,0 +1,150 @@
+--- blake2b_simd-1.0.2/src/guts.rs	2006-07-23 18:21:28.000000000 -0700
++++ blake2b_simd-1.0.2/src/guts.rs	2025-11-29 13:23:23.354830544 -0800
+@@ -2,12 +2,37 @@
+ use arrayref::array_ref;
+ use core::cmp;
+ 
++#[cfg(feature = "std")]
++use std::sync::OnceLock;
++
+ #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+ pub const MAX_DEGREE: usize = 4;
+ 
+ #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+ pub const MAX_DEGREE: usize = 1;
+ 
++// PATCHED: Function pointer types for indirect dispatch to prevent LTO inlining
++#[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
++type Compress1LoopFn = unsafe fn(&[u8], &mut [Word; 8], Count, LastNode, Finalize, Stride);
++
++#[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
++type Compress4LoopFn = unsafe fn(&mut [Job; 4], Finalize, Stride);
++
++// Static function pointers initialized at runtime - LTO cannot see through these
++#[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
++static COMPRESS1_AVX2: OnceLock<Compress1LoopFn> = OnceLock::new();
++
++#[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
++static COMPRESS4_AVX2: OnceLock<Compress4LoopFn> = OnceLock::new();
++
++#[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
++fn init_avx2_dispatch() {
++    if is_x86_feature_detected!("avx2") {
++        let _ = COMPRESS1_AVX2.set(avx2::compress1_loop);
++        let _ = COMPRESS4_AVX2.set(avx2::compress4_loop);
++    }
++}
++
+ // Variants other than Portable are unreachable in no_std, unless CPU features
+ // are explicitly enabled for the build with e.g. RUSTFLAGS="-C target-feature=avx2".
+ // This might change in the future if is_x86_feature_detected moves into libcore.
+@@ -26,6 +51,12 @@
+ 
+ impl Implementation {
+     pub fn detect() -> Self {
++        // PATCHED: Initialize function pointer dispatch before detection
++        #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
++        {
++            init_avx2_dispatch();
++        }
++
+         // Try the different implementations in order of how fast/modern they
+         // are. Currently on non-x86, everything just uses portable.
+         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+@@ -50,36 +81,38 @@
+     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+     #[allow(unreachable_code)]
+     pub fn sse41_if_supported() -> Option<Self> {
+-        // Check whether SSE4.1 support is assumed by the build.
+-        #[cfg(target_feature = "sse4.1")]
+-        {
+-            return Some(Implementation(Platform::SSE41));
+-        }
+-        // Otherwise dynamically check for support if we can.
++        // PATCHED: Always prefer runtime detection when std is available.
+         #[cfg(feature = "std")]
+         {
+             if is_x86_feature_detected!("sse4.1") {
+                 return Some(Implementation(Platform::SSE41));
+             }
+         }
++        // Compile-time detection only for no_std environments where
++        // runtime detection is not available.
++        #[cfg(all(not(feature = "std"), target_feature = "sse4.1"))]
++        {
++            return Some(Implementation(Platform::SSE41));
++        }
+         None
+     }
+ 
+     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+     #[allow(unreachable_code)]
+     pub fn avx2_if_supported() -> Option<Self> {
+-        // Check whether AVX2 support is assumed by the build.
+-        #[cfg(target_feature = "avx2")]
+-        {
+-            return Some(Implementation(Platform::AVX2));
+-        }
+-        // Otherwise dynamically check for support if we can.
++        // PATCHED: Always prefer runtime detection when std is available.
+         #[cfg(feature = "std")]
+         {
+             if is_x86_feature_detected!("avx2") {
+                 return Some(Implementation(Platform::AVX2));
+             }
+         }
++        // Compile-time detection only for no_std environments where
++        // runtime detection is not available.
++        #[cfg(all(not(feature = "std"), target_feature = "avx2"))]
++        {
++            return Some(Implementation(Platform::AVX2));
++        }
+         None
+     }
+ 
+@@ -104,8 +137,20 @@
+     ) {
+         match self.0 {
+             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+-            Platform::AVX2 => unsafe {
+-                avx2::compress1_loop(input, words, count, last_node, finalize, stride);
++            Platform::AVX2 => {
++                // PATCHED: Use function pointer dispatch to prevent LTO inlining
++                #[cfg(feature = "std")]
++                {
++                    if let Some(func) = COMPRESS1_AVX2.get() {
++                        unsafe { func(input, words, count, last_node, finalize, stride) };
++                        return;
++                    }
++                }
++                // Fallback for no_std or if not initialized
++                #[cfg(not(feature = "std"))]
++                unsafe {
++                    avx2::compress1_loop(input, words, count, last_node, finalize, stride);
++                }
+             },
+             // Note that there's an SSE version of compress1 in the official C
+             // implementation, but I haven't ported it yet.
+@@ -128,7 +173,21 @@
+     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+     pub fn compress4_loop(&self, jobs: &mut [Job; 4], finalize: Finalize, stride: Stride) {
+         match self.0 {
+-            Platform::AVX2 => unsafe { avx2::compress4_loop(jobs, finalize, stride) },
++            Platform::AVX2 => {
++                // PATCHED: Use function pointer dispatch to prevent LTO inlining
++                #[cfg(feature = "std")]
++                {
++                    if let Some(func) = COMPRESS4_AVX2.get() {
++                        unsafe { func(jobs, finalize, stride) };
++                        return;
++                    }
++                }
++                // Fallback for no_std or if not initialized
++                #[cfg(not(feature = "std"))]
++                unsafe {
++                    avx2::compress4_loop(jobs, finalize, stride);
++                }
++            },
+             _ => panic!("unsupported"),
+         }
+     }

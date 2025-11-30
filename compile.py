@@ -4,26 +4,27 @@
 # GNU General Public License
 #
 # Updated 2024 for polkadot-sdk compatibility
+# Updated 2024-11: Removed source downloading (now handled by prepare_source.py)
 
-# Script to compile a specific release of polkadot with many different
-# sets of optimization options (specified in the code down below, look
-# for the ##########).
+# Script to compile polkadot with various optimization options.
 #
-# The binaries are placed in
-#     ~/polkadot-optimized/bin/VERSION
-# (change this in the code below if needed).
+# PREREQUISITES:
+#   Run prepare_source.py first to download and patch the source.
+#
+# USAGE:
+#   python compile.py
+#
+# The binaries are placed in ~/optimized-builds/bin/VERSION
 # Beware that compiling takes a while (about 30 min per set of options).
-# It is recommended to run the script in, for example, a screen session.
+# It is recommended to run the script in a screen session.
 
-from operator import truediv
 import subprocess
 import os
 import shutil
 import re
 import glob
 import json
-import logging
-
+import sys
 import datetime
 import dateutil.relativedelta
 import itertools
@@ -31,197 +32,258 @@ import itertools
 import tomlkit
 from pathlib import Path
 
+
 def extract_largest_number(files):
     if len(files) == 0:
         return -1
     else:
-        return max([int(re.findall(r"_\d+.bin",f)[0][1:-4]) for f in files])
+        return max([int(re.findall(r"_\d+.bin", f)[0][1:-4]) for f in files])
+
 
 def hours_minutes(dt1, dt2):
     rd = dateutil.relativedelta.relativedelta(dt2, dt1)
     return "{}H {}M {}S".format(rd.hours, rd.minutes, rd.seconds)
 
+
 def run(cmd, work_dir, log_file, env=None):
     os.chdir(work_dir)
     with open(log_file, "a+") as log:
-        if env==None:
+        if env is None:
             subprocess.run(cmd, shell=True, check=True, universal_newlines=True, stderr=log)
         else:
             subprocess.run(cmd, shell=True, check=True, universal_newlines=True, stderr=log, env=env)
 
-def compile(version, opts):
-    print(" === STARTING COMPILATION === ")
-    print(opts)
-    print(version)
+
+def verify_binary(binary_path):
+    """Verify binary has expected SIMD characteristics.
+
+    Checks for:
+    - Hand-tuned BLAKE2 AVX2 code (blake2b_simd::avx2::compress1_loop)
+    - Count of zmm (AVX-512) instructions
+    - Count of ymm (AVX2) instructions
+
+    Returns dict with verification results.
+    """
+    results = {
+        'has_blake2_avx2': False,
+        'blake2_avx2_symbols': [],
+        'zmm_count': 0,
+        'ymm_count': 0,
+        'warnings': [],
+    }
+
+    if not os.path.exists(binary_path):
+        results['warnings'].append(f"Binary not found: {binary_path}")
+        return results
+
+    # Check for hand-tuned BLAKE2 AVX2 symbols
+    try:
+        objdump_result = subprocess.run(
+            ['objdump', '-t', binary_path],
+            capture_output=True, text=True, timeout=60
+        )
+        for line in objdump_result.stdout.split('\n'):
+            if 'blake2b_simd' in line and 'avx2' in line.lower():
+                results['blake2_avx2_symbols'].append(line.strip().split()[-1])
+                results['has_blake2_avx2'] = True
+    except Exception as e:
+        results['warnings'].append(f"Failed to check symbols: {e}")
+
+    # Count SIMD instructions (zmm = AVX-512, ymm = AVX2)
+    # Use grep -c to count lines containing the register (one per instruction)
+    try:
+        # Count zmm (AVX-512) instructions
+        zmm_result = subprocess.run(
+            f"objdump -d '{binary_path}' | grep -c zmm",
+            shell=True, capture_output=True, text=True, timeout=300
+        )
+        results['zmm_count'] = int(zmm_result.stdout.strip()) if zmm_result.returncode == 0 else 0
+
+        # Count ymm (AVX2) instructions
+        ymm_result = subprocess.run(
+            f"objdump -d '{binary_path}' | grep -c ymm",
+            shell=True, capture_output=True, text=True, timeout=300
+        )
+        results['ymm_count'] = int(ymm_result.stdout.strip()) if ymm_result.returncode == 0 else 0
+    except Exception as e:
+        results['warnings'].append(f"Failed to count instructions: {e}")
+
+    # Reference values from official Parity build
+    OFFICIAL_ZMM = 2018
+    OFFICIAL_YMM = 15787
+
+    # Add warnings for unexpected values
+    if not results['has_blake2_avx2']:
+        results['warnings'].append("WARNING: Hand-tuned BLAKE2 AVX2 code NOT found!")
+
+    if results['zmm_count'] > OFFICIAL_ZMM * 10:
+        results['warnings'].append(
+            f"WARNING: High AVX-512 count ({results['zmm_count']:,} vs {OFFICIAL_ZMM:,} official) - "
+            "may indicate excessive auto-vectorization"
+        )
+
+    if results['ymm_count'] > OFFICIAL_YMM * 10:
+        results['warnings'].append(
+            f"WARNING: High AVX2 count ({results['ymm_count']:,} vs {OFFICIAL_YMM:,} official) - "
+            "may indicate excessive auto-vectorization"
+        )
+
+    return results
+
+
+def print_verification(results):
+    """Print binary verification results."""
+    print("\n" + "-" * 60)
+    print("Binary Verification:")
+    print("-" * 60)
+
+    # BLAKE2 AVX2 status
+    if results['has_blake2_avx2']:
+        print(f"  Hand-tuned BLAKE2 AVX2: YES ✓")
+        for sym in results['blake2_avx2_symbols'][:3]:
+            print(f"    - {sym}")
+    else:
+        print(f"  Hand-tuned BLAKE2 AVX2: NO ✗")
+
+    # Instruction counts
+    print(f"  AVX-512 (zmm) instructions: {results['zmm_count']:,}")
+    print(f"  AVX2 (ymm) instructions:    {results['ymm_count']:,}")
+    print(f"  (Official reference: zmm=2,018  ymm=15,787)")
+
+    # Warnings
+    if results['warnings']:
+        print("")
+        for warning in results['warnings']:
+            print(f"  {warning}")
+
+
+def check_source(base_dir):
+    """Check if polkadot-sdk source exists and is properly set up."""
+    sdk_dir = os.path.join(base_dir, "polkadot-sdk")
+
+    if not os.path.isdir(sdk_dir):
+        return None, "not_found"
+
+    # Check for .source-info marker
+    info_path = os.path.join(sdk_dir, ".source-info")
+    if os.path.exists(info_path):
+        with open(info_path, "r") as f:
+            info = json.load(f)
+        return info, "ready"
+
+    # Check Cargo.toml for patch section (legacy check)
+    cargo_toml = os.path.join(sdk_dir, "Cargo.toml")
+    if os.path.exists(cargo_toml):
+        with open(cargo_toml, "r") as f:
+            config = tomlkit.load(f)
+        has_patch = "patch" in config and "crates-io" in config.get("patch", {})
+        return {"version": "unknown", "patched": has_patch}, "legacy"
+
+    return {"version": "unknown", "patched": False}, "unknown"
+
+
+def prompt_yes_no(question, default=True):
+    """Prompt user for yes/no answer."""
+    suffix = " [Y/n]: " if default else " [y/N]: "
+    while True:
+        answer = input(question + suffix).strip().lower()
+        if answer == "":
+            return default
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print("Please answer 'y' or 'n'")
+
+
+def compile(version, opts, base_dir):
+    print("\n" + "=" * 60)
+    print(" STARTING COMPILATION ")
+    print("=" * 60)
+    print(f"Options: {opts}")
+    print(f"Version: {version}")
 
     # Prepare build directory
-    os.chdir(os.path.expanduser('~/polkadot-optimized'))
-    bin_dir = 'bin/' + version
+    os.chdir(base_dir)
+    bin_dir = os.path.join('bin', version)
     if not os.path.isdir(bin_dir):
         os.makedirs(bin_dir)
 
     # Check if opts was not compiled before
-    list_of_files = glob.glob(bin_dir + '/polkadot_*.json')
+    list_of_files = glob.glob(os.path.join(bin_dir, 'polkadot_*.json'))
     for f in list_of_files:
         with open(f, "r") as file:
             json_dict = json.load(file)
-            if json_dict['build_options']==opts:
+            if json_dict.get('build_options') == opts:
+                print(f"Build with these options already exists, skipping.")
                 return
 
     # Get number of new polkadot build, set filenames
-    list_of_files = glob.glob(bin_dir + '/polkadot_*.bin')
+    list_of_files = glob.glob(os.path.join(bin_dir, 'polkadot_*.bin'))
     nb = extract_largest_number(list_of_files) + 1
 
-    new_filename_root = bin_dir + '/polkadot_{}'.format(nb)
-    log_file = os.path.expanduser('~/polkadot-optimized/' + new_filename_root + ".log")
+    new_filename_root = os.path.join(bin_dir, f'polkadot_{nb}')
+    log_file = os.path.join(base_dir, new_filename_root + ".log")
 
-    # MODIFIED: Changed from 'polkadot' to 'polkadot-sdk' for new repo structure
-    if os.path.isdir('polkadot-sdk'):
-        shutil.rmtree('polkadot-sdk')
+    # Source directory
+    work_dir = os.path.join(base_dir, 'polkadot-sdk')
 
-    # Download and extract release tarball
-    work_dir = os.path.expanduser('~/polkadot-optimized')
-
-    # Download the official release tarball instead of git clone
-    # Release tarballs often have better vendored dependencies than git clones
-    # MODIFIED: Changed from git clone to tarball download for better compatibility
-    tarball_url = "https://github.com/paritytech/polkadot-sdk/archive/refs/tags/polkadot-{}.tar.gz".format(version)
-    tarball_file = "polkadot-{}.tar.gz".format(version)
-
-    run("curl -L -o {} {}".format(tarball_file, tarball_url), work_dir, log_file)
-    run("tar -xzf {}".format(tarball_file), work_dir, log_file)
-    run("rm {}".format(tarball_file), work_dir, log_file)
-
-    # Rename extracted directory to polkadot-sdk for consistency
-    # GitHub tarballs extract to polkadot-sdk-polkadot-{version} format
-    extracted_dir = "polkadot-sdk-polkadot-{}".format(version)
-    run("mv {} polkadot-sdk".format(extracted_dir), work_dir, log_file)
-
-    # MODIFIED: Updated work_dir path from 'polkadot' to 'polkadot-sdk'
-    work_dir = os.path.expanduser('~/polkadot-optimized/polkadot-sdk')
-
-    # MODIFIED: REMOVED init.sh call - polkadot-sdk is a monorepo and doesn't need/have init.sh
-    # The old paritytech/polkadot repo required: run("./scripts/init.sh", work_dir, log_file)
-    # This is no longer needed in the new polkadot-sdk structure
-
-    # Set build options
+    # Set build options via toolchain
     if opts['toolchain'] == 'stable':
         run("rustup override set stable", work_dir, log_file)
     else:
         run("rustup override set nightly", work_dir, log_file)
-        # subprocess.Popen("rustup override set nightly", shell=True, check=True, universal_newlines=True)
 
-    # Update the active toolchain to latest version
-    # Ensures we're using the newest stable or nightly with latest optimizations
+    # Update the active toolchain
     run("rustup update", work_dir, log_file)
 
-    # Ensure wasm32-unknown-unknown target is installed for current toolchain
-    # Polkadot SDK requires WASM compilation for runtime
+    # Ensure required targets/components
     run("rustup target add wasm32-unknown-unknown", work_dir, log_file)
-
-    # Ensure rust-src component is installed for current toolchain
-    # Required for compiling WASM runtimes (provides std library sources)
     run("rustup component add rust-src", work_dir, log_file)
 
-    run("cargo fetch", work_dir, log_file)
-
-    ## OLD CODE WITH RUSTFLAGS
-    # RUSTFLAGS = "-C opt-level=3"
-    # if not opts['arch'] == None:
-    #     RUSTFLAGS = RUSTFLAGS + " -C target-cpu={}".format(opts['arch'])
-    # if opts['codegen']:
-    #     RUSTFLAGS = RUSTFLAGS + " -C codegen-units=1"
-    # if opts['lto_ldd']:
-    #     RUSTFLAGS = RUSTFLAGS + " -C linker-plugin-lto -C linker=clang -C link-arg=-fuse-ld=lld"
-    # # Does not work
-    # #if opts['lto']:
-    # #    RUSTFLAGS = RUSTFLAGS + " -C embed-bitcode -C lto=fat"
-
-    # # Start building
-    # cargo_build_opts = ' --profile={} --locked --target=x86_64-unknown-linux-gnu'.format(opts['profile'])
-
-    ## NEW CODE AS CUSTOM PROFILE (
-    # It overwrites the production profile -- otherwise still build errors.
-    # NOTE: In polkadot-sdk, the Cargo.toml with profiles is in the root directory
-    config = tomlkit.loads(Path(work_dir + "/Cargo.toml").read_text())
+    # Modify Cargo.toml with build profile settings
+    config = tomlkit.loads(Path(os.path.join(work_dir, "Cargo.toml")).read_text())
     profile = {}
-    # TODO test if arch can be set here
-    # if not opts['arch'] == None:
-    #     profile['arch'] = opts['arch']
     profile['inherits'] = 'release'
     profile['codegen-units'] = opts['codegen-units']
     profile['lto'] = opts['lto']
     profile['opt-level'] = opts['opt-level']
 
     config['profile']['production'] = profile
-    with Path(work_dir + "/Cargo.toml").open("w") as fout:
+    with Path(os.path.join(work_dir, "Cargo.toml")).open("w") as fout:
         fout.write(tomlkit.dumps(config))
 
     RUSTFLAGS = ""
-    # TODO test if arch can be set in profile
-    if not opts['arch'] == None:
-        RUSTFLAGS = RUSTFLAGS + " -C target-cpu={}".format(opts['arch'])
+    if opts['arch'] is not None:
+        RUSTFLAGS = f" -C target-cpu={opts['arch']}"
 
-    # Start building
-    # MODIFIED: Added -p polkadot to build only the polkadot package (and its dependencies)
-    # This builds all 3 binaries: polkadot, polkadot-execute-worker, polkadot-prepare-worker
+    # Build command
     cargo_build_opts = ' -p polkadot --profile=production --locked --target=x86_64-unknown-linux-gnu'
-
     if opts['toolchain'] == 'nightly':
-        cargo_build_opts = cargo_build_opts + ' -Z unstable-options'
+        cargo_build_opts += ' -Z unstable-options'
 
-    cargo_cmd = 'cargo build ' + cargo_build_opts
+    cargo_cmd = 'cargo build' + cargo_build_opts
     env = os.environ.copy()
-    env["RUSTFLAGS"] =  RUSTFLAGS
+    env["RUSTFLAGS"] = RUSTFLAGS
 
-    # Generate custom version suffix from build options for tracking
-    # Format: {toolchain}-{arch}-cu{codegen-units}-{lto}-opt{opt-level}-bld{build_number}
-    # Example: stb-native-cu1-fat-opt3-bld0
-    # This is more useful than git hash for performance comparison
+    # Version suffix for tracking
     toolchain_abbr = 'stb' if opts['toolchain'] == 'stable' else 'nightly'
     arch_abbr = opts['arch'] if opts['arch'] else 'default'
     version_suffix = f"{toolchain_abbr}-{arch_abbr}-cu{opts['codegen-units']}-{opts['lto']}-opt{opts['opt-level']}-bld{nb}"
     env["SUBSTRATE_CLI_GIT_COMMIT_HASH"] = version_suffix
     print(f"Version suffix: {version_suffix}")
 
-    # Compiler selection for C/C++ dependencies (RocksDB, etc.)
-    #
-    # BACKGROUND:
-    # - Polkadot SDK docs officially recommend clang
-    #   https://docs.polkadot.com/develop/parachains/install-polkadot-sdk/
-    # - Modern compilers (GCC 15+, clang 19+) have stricter type checking that breaks
-    #   RocksDB headers (missing #include <cstdint> for uint64_t types)
-    # - On Linux, clang uses GCC's standard library (libstdc++), not its own
-    #
-    # FALLBACK STRATEGY:
-    # 1. Try clang-18 first (preferred, matches Polkadot docs)
-    #    - Ubuntu 24.04: clang-18 → GCC 13 libstdc++ → works ✓
-    #    - Arch with GCC 15: clang-18 → GCC 15 libstdc++ → may fail
-    #
-    # 2. Fall back to gcc-14 (compatible compiler + libstdc++)
-    #    - Arch: Provides both GCC 14 compiler and compatible libstdc++
-    #    - Ubuntu: Not installed by default (stays on clang-18)
-    #
-    # 3. Try distro-specific paths for clang-18 and gcc-14
-    #    - Arch packages install to non-standard locations
-    #
-    # 4. Fall back to system clang (usually symlink to latest)
-    #    - WARNING: On bleeding-edge distros, this may be clang 19+ which can fail
-    #    - On stable distros (Ubuntu), usually symlinks to clang-18
-    #
-    # OVERRIDE: Set CC/CXX environment variables to force a specific compiler
-    #
+    # Compiler selection (same logic as before)
     if "CC" not in env or "CXX" not in env:
         cc_found = None
         cxx_found = None
 
-        # Compiler preference order (try each until one is found)
         for cc_candidate, cxx_candidate in [
-            ("clang-18", "clang++-18"),                                     # 1. Preferred: clang-18 (Polkadot docs recommendation)
-            ("gcc-14", "g++-14"),                                            # 2. Fallback: GCC 14 (Arch with GCC 15)
-            ("/usr/lib/llvm18/bin/clang", "/usr/lib/llvm18/bin/clang++"),  # 3. Arch-specific: clang18 package path
-            ("/usr/bin/gcc-14", "/usr/bin/g++-14"),                        # 4. Arch-specific: gcc14 package path
-            ("clang", "clang++"),                                           # 5. Last resort: system default clang (may be too new!)
+            ("clang-18", "clang++-18"),
+            ("gcc-14", "g++-14"),
+            ("/usr/lib/llvm18/bin/clang", "/usr/lib/llvm18/bin/clang++"),
+            ("/usr/bin/gcc-14", "/usr/bin/g++-14"),
+            ("clang", "clang++"),
         ]:
             cc_path = shutil.which(cc_candidate)
             cxx_path = shutil.which(cxx_candidate)
@@ -229,24 +291,12 @@ def compile(version, opts):
                 cc_found = cc_candidate
                 cxx_found = cxx_candidate
                 print(f"Using {cc_candidate}/{cxx_candidate} for C/C++ compilation")
-
-                # Warn if using generic clang (might be too new on bleeding-edge distros)
                 if cc_candidate == "clang":
-                    print("WARNING: Using system default 'clang' - if build fails due to RocksDB errors,")
-                    print("         install clang-18 or gcc-14 for compatibility")
+                    print("WARNING: Using system default 'clang' - may have compatibility issues")
                 break
 
         if not cc_found:
             print("ERROR: No compatible C/C++ compiler found!")
-            print("Polkadot SDK requires clang for building.")
-            print("However, newer compilers (clang 19+, GCC 15+) have compatibility issues with RocksDB.")
-            print("")
-            print("Please install a compatible compiler:")
-            print("  Arch/CachyOS: sudo pacman -S clang18")
-            print("  Or:           sudo pacman -S gcc14")
-            print("")
-            print("See official requirements:")
-            print("  https://docs.polkadot.com/develop/parachains/install-polkadot-sdk/")
             raise RuntimeError("No compatible C/C++ compiler found")
 
         if "CC" not in env:
@@ -254,78 +304,106 @@ def compile(version, opts):
         if "CXX" not in env:
             env["CXX"] = cxx_found
 
+    # Build
     dt1 = datetime.datetime.now()
     run(cargo_cmd, work_dir, log_file, env=env)
     dt2 = datetime.datetime.now()
 
-    ## Copy new polkadot files
-    os.chdir(os.path.expanduser('~/polkadot-optimized'))
-
-    # MODIFIED: Updated path from 'polkadot/' to 'polkadot-sdk/'
+    # Copy binaries
+    os.chdir(base_dir)
     target_dir = 'polkadot-sdk/target/x86_64-unknown-linux-gnu/production'
-
-    # MODIFIED: Now copying all 3 required binaries instead of just 1
-    # polkadot-sdk produces 3 binaries that all need to be deployed together:
-    # - polkadot: main node binary
-    # - polkadot-prepare-worker: PVF preparation worker
-    # - polkadot-execute-worker: PVF execution worker
     binaries = ['polkadot', 'polkadot-prepare-worker', 'polkadot-execute-worker']
 
     for binary in binaries:
-        orig_filename = '{}/{}'.format(target_dir, binary)
+        orig_filename = os.path.join(target_dir, binary)
         if binary == 'polkadot':
-            # Main binary keeps the numbered naming for benchmark compatibility
             shutil.copy2(orig_filename, new_filename_root + ".bin")
         else:
-            # Worker binaries use their original names with build number suffix
-            shutil.copy2(orig_filename, bin_dir + '/{}_{}.bin'.format(binary, nb))
+            shutil.copy2(orig_filename, os.path.join(bin_dir, f'{binary}_{nb}.bin'))
 
-    json_dict = {}
-    json_dict['build_options'] = opts
-    json_dict['build_time'] = hours_minutes(dt1, dt2)
-    json_dict['RUSTFLAGS'] = RUSTFLAGS
-    json_dict['build_command'] = cargo_cmd
-    # MODIFIED: Added list of binaries to JSON for reference
-    json_dict['binaries'] = binaries
+    # Verify the binary
+    print("\nVerifying binary...")
+    verification = verify_binary(new_filename_root + ".bin")
+    print_verification(verification)
 
-    json_object = json.dumps(json_dict, indent=4)
+    # Save build metadata including verification
+    json_dict = {
+        'build_options': opts,
+        'build_time': hours_minutes(dt1, dt2),
+        'RUSTFLAGS': RUSTFLAGS,
+        'build_command': cargo_cmd,
+        'binaries': binaries,
+        'version_suffix': version_suffix,
+        'verification': {
+            'has_blake2_avx2': verification['has_blake2_avx2'],
+            'zmm_count': verification['zmm_count'],
+            'ymm_count': verification['ymm_count'],
+            'warnings': verification['warnings'],
+        }
+    }
+
     with open(new_filename_root + ".json", "w") as outfile:
-        outfile.write(json_object)
+        json.dump(json_dict, outfile, indent=4)
 
-# https://stackoverflow.com/questions/5228158/cartesian-product-of-a-dictionary-of-lists
+    print(f"\nBuild complete: {new_filename_root}.bin")
+    print(f"Build time: {hours_minutes(dt1, dt2)}")
+
+
 def product_dict(**kwargs):
     keys = kwargs.keys()
     vals = kwargs.values()
     for instance in itertools.product(*vals):
         yield dict(zip(keys, instance))
 
+
 if __name__ == "__main__":
-    # MODIFIED: Updated version format for polkadot-sdk
-    # Old format: '0.9.27' (used with v{version} tag)
-    # New format: 'stable2509-2' (used with polkadot-{version} tag)
-    # This corresponds to polkadot v1.20.2
-    # See releases at: https://github.com/paritytech/polkadot-sdk/releases
+    # Configuration
     version = 'stable2509-2'
+    base_dir = os.path.expanduser('~/optimized-builds')
 
-    # # All the options tested for analysis on website
-    # dict_opts = {'toolchain': ['stable', 'nightly'],
-    #             'arch':      [None, 'alderlake'],  # use native if other arch
-    #             'codegen-units':   [1, 16],
-    #             'lto':       ['off', 'fat', 'thin'],
-    #             'opt-level': [2, 3]
-    #             }
-    # opts = list(product_dict(**dict_opts))
+    print("=" * 60)
+    print("Polkadot Compilation Script")
+    print("=" * 60)
 
-    # Only the good builds after analysis - takes about 4 hours to build
-    # SUGGESTION: For initial testing, comment out all but one option to verify
-    # the build process works before running all 5 configurations
+    # Check for source
+    source_info, status = check_source(base_dir)
+
+    if status == "not_found":
+        print("\nERROR: polkadot-sdk source not found!")
+        print(f"Expected at: {os.path.join(base_dir, 'polkadot-sdk')}")
+        print("\nRun prepare_source.py first:")
+        print(f"  python prepare_source.py --version {version}")
+        sys.exit(1)
+
+    print(f"\nSource found:")
+    print(f"  Version: {source_info.get('version', 'unknown')}")
+    print(f"  Patched: {source_info.get('patched', False)}")
+
+    # Build options
     opts = []
-    opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 1,  'lto': 'fat',  'opt-level': 3}) # build 15
-    opts.append({'toolchain': 'stable',  'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 21
-    opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'fat',  'opt-level': 2}) # build 38
-    opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 1,  'lto': 'thin', 'opt-level': 2}) # build 40
-    opts.append({'toolchain': 'nightly', 'arch': 'native', 'codegen-units': 16, 'lto': 'fat',  'opt-level': 3}) # build 45
 
-    print("Number of different builds: {}".format(len(opts)))
+    # Recommended build with patches (target-cpu=native now works!)
+    opts.append({'toolchain': 'stable', 'arch': 'native', 'codegen-units': 1, 'lto': 'fat', 'opt-level': 3})
+
+    # Check if building with native on unpatched source
+    uses_native = any(o.get('arch') == 'native' for o in opts)
+    if uses_native and not source_info.get('patched', False):
+        print("\n" + "!" * 60)
+        print("WARNING: Building with target-cpu=native on UNPATCHED source!")
+        print("This will eliminate hand-tuned BLAKE2 AVX2 optimizations.")
+        print("!" * 60)
+        if not prompt_yes_no("Continue anyway?", default=False):
+            print("\nRun prepare_source.py to apply patches:")
+            print(f"  python prepare_source.py --version {version} --force")
+            sys.exit(1)
+
+    print(f"\nBuilding {len(opts)} configuration(s)...")
+
     for opt in opts:
-        compile(version, opt)
+        compile(version, opt, base_dir)
+
+    print("\n" + "=" * 60)
+    print("All builds complete!")
+    print("=" * 60)
+    print(f"\nBinaries saved to: {os.path.join(base_dir, 'bin', version)}")
+    print("Run run_benchmarks.py to benchmark the builds.")

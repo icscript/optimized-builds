@@ -1,0 +1,27 @@
+CPU utilization at start: 0.0
+2025-11-28 08:44:44 Running machine benchmarks...    
+2025-11-28 08:46:05 
++----------+-----------------------+-------------+--------------+-------------------+
+| Category | Function              | Score       | Minimum      | Result            |
++===================================================================================+
+| CPU      | BLAKE2-256            | 1.44 GiBs   | 1000.00 MiBs | ✅ Pass (147.0 %) |
+|----------+-----------------------+-------------+--------------+-------------------|
+| CPU      | BLAKE2-256-Parallel-8 | 1.48 GiBs   | 1000.00 MiBs | ✅ Pass (151.8 %) |
+|----------+-----------------------+-------------+--------------+-------------------|
+| CPU      | SR25519-Verify        | 1.34 MiBs   | 637.62 KiBs  | ✅ Pass (214.6 %) |
+|----------+-----------------------+-------------+--------------+-------------------|
+| Memory   | Copy                  | 16.34 GiBs  | 11.49 GiBs   | ✅ Pass (142.2 %) |
+|----------+-----------------------+-------------+--------------+-------------------|
+| Disk     | Seq Write             | 1.26 GiBs   | 950.00 MiBs  | ✅ Pass (135.5 %) |
+|----------+-----------------------+-------------+--------------+-------------------|
+| Disk     | Rnd Write             | 338.93 MiBs | 420.00 MiBs  | ❌ Fail ( 80.7 %) |
++----------+-----------------------+-------------+--------------+-------------------+
+From 6 benchmarks in total, 5 passed and 1 failed (10% fault tolerance).    
+2025-11-28 08:46:05 The hardware fails to meet the requirements    
+2025-11-28 08:46:05 Failing since --allow-fail is not set    
+Error: 
+   0: [91mOne of the benchmarks had a score that was lower than its requirement[0m
+
+Backtrace omitted. Run with RUST_BACKTRACE=1 environment variable to display it.
+Run with RUST_BACKTRACE=full to include source snippets.
+CPU utilization at end: 0.0
